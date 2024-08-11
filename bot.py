@@ -1,8 +1,9 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from apscheduler.schedulers.background import BackgroundScheduler
-from database import init_db, add_expense, get_expenses, get_total_expenses, clear_all_expenses, add_user, get_all_users
+from database import init_db, add_expense, get_expenses, get_total_expenses, clear_all_expenses, add_user, get_user_id, set_reminder_status, get_reminder_status
 import datetime
+import sqlite3
 
 # Initialize the database
 init_db()
@@ -17,28 +18,44 @@ async def start(update: Update, context):
 
 async def add_expense_handler(update: Update, context):
     chat_id = update.message.chat_id
-    add_user(chat_id)  # Store the chat ID if it's not already stored
-    message = update.message.text
+    user_id = get_user_id(chat_id)
+    if not user_id:
+        await update.message.reply_text("User not found. Please use /start to initialize.")
+        return
+
+    message = update.message.text.strip()
     try:
-        parts = message.split('-')
-        item = parts[0].strip()
-        cost = int(parts[1].strip())
-        category = parts[2].strip()
+        # Split the message using the hyphen as a delimiter, handling any extra spaces
+        parts = [part.strip() for part in message.split('-')]
+
+        if len(parts) != 3:
+            raise ValueError("Invalid format")
+
+        item = parts[0]
+        cost = int(parts[1])
+        category = parts[2]
         date = datetime.datetime.now().strftime("%Y-%m-%d")
-        add_expense(item, cost, category, date)
+
+        add_expense(user_id, item, cost, category, date)
         await update.message.reply_text(f"Added: {item} - {cost}rs - {category}")
-    except:
+    except ValueError:
         await update.message.reply_text("Please use the format: Item - Cost - Category")
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
 
 async def report(update: Update, context):
     chat_id = update.message.chat_id
-    add_user(chat_id)  # Ensure the chat ID is stored
+    user_id = get_user_id(chat_id)
+    if not user_id:
+        await update.message.reply_text("User not found. Please use /start to initialize.")
+        return
+
     today = datetime.datetime.now()
     start_date = (today - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
-    expenses = get_expenses(start_date, end_date)
-    total = get_total_expenses(start_date, end_date)
+    expenses = get_expenses(user_id, start_date, end_date)
+    total = get_total_expenses(user_id, start_date, end_date)
     
     report_msg = "Expense Report (Last 30 Days):\n\n"
     for item, cost, category, date in expenses:
@@ -49,20 +66,35 @@ async def report(update: Update, context):
 
 async def set_reminder(update: Update, context):
     chat_id = update.message.chat_id
-    add_user(chat_id)  # Ensure the chat ID is stored
+    user_id = get_user_id(chat_id)
+    if not user_id:
+        await update.message.reply_text("User not found. Please use /start to initialize.")
+        return
+
+    set_reminder_status(user_id, "enabled")  # Enable reminders
     await update.message.reply_text("Reminder set! I'll remind you daily to log your expenses.")
 
 async def clear_all(update: Update, context):
     chat_id = update.message.chat_id
-    add_user(chat_id)  # Ensure the chat ID is stored
-    clear_all_expenses()
-    await update.message.reply_text("All expenses have been cleared.")
+    user_id = get_user_id(chat_id)
+    if not user_id:
+        await update.message.reply_text("User not found. Please use /start to initialize.")
+        return
+
+    clear_all_expenses(user_id)  # Clear all expenses and disable reminders
+    set_reminder_status(user_id, "disabled")
+    await update.message.reply_text("All expenses have been cleared and reminders are disabled.")
 
 def send_daily_reminder():
-    users = get_all_users()
-    message = "Reminder: Please log your expenses for today!"
-    for chat_id in users:
-        application.bot.send_message(chat_id=chat_id, text=message)
+    conn = sqlite3.connect('expenses.db')
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT user_id FROM reminder_status WHERE status = 'enabled'")
+    user_ids = c.fetchall()
+    conn.close()
+
+    for user_id in user_ids:
+        message = "Reminder: Please log your expenses for today!"
+        application.bot.send_message(chat_id=user_id[0], text=message)
 
 def main():
     global application
